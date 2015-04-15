@@ -51,3 +51,6 @@ testserver.log
 
 # Ignore the hermetic cygwin used on windows toolchain builds.
 /cygwin/
+
+# Ignore cscope files
+cscope.*
