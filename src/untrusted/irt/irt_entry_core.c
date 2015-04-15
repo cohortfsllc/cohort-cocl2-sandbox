@@ -27,8 +27,13 @@ static size_t irt_query(const char *interface_ident,
   size_t result = nacl_irt_query_core(interface_ident, table, tablesize);
   if (result != 0)
     return result;
-  return nacl_irt_query_list(interface_ident, table, tablesize,
-                             irt_interfaces, sizeof(irt_interfaces));
+
+  result = nacl_irt_query_list(interface_ident, table, tablesize,
+                               irt_interfaces, sizeof(irt_interfaces));
+  if (result != 0)
+    return result;
+
+  return nacl_irt_query_cocl2(interface_ident, table, tablesize);
 }
 
 void nacl_irt_start(uint32_t *info) {

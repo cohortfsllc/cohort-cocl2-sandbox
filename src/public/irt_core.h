@@ -57,6 +57,10 @@ void nacl_irt_enter_user_code(uint32_t *info, nacl_irt_query_func_t query_func);
 size_t nacl_irt_query_core(const char *interface_ident,
                            void *table, size_t tablesize);
 
+/* Function for querying for NaCl's CoCl2 IRT interfaces. */
+size_t nacl_irt_query_cocl2(const char *interface_ident,
+                            void *table, size_t tablesize);
+
 /* Definition of an IRT interface, for use with nacl_irt_query_list(). */
 struct nacl_irt_interface {
   const char *name;

@@ -436,6 +436,19 @@ struct nacl_irt_icache {
   int (*clear_cache)(void *addr, size_t size);
 };
 
+
+/*
+ * CoCl2
+ */
+#define NACL_IRT_COCL2_v0_1 "nacl-irt-cocl2-0.1"
+struct nacl_irt_cocl2 {
+    /*
+     * Proof of concept test.
+     */
+    int (*cocl2_test)(int a, int b, int *c);
+};
+
+
 #if defined(__cplusplus)
 }
 #endif
