@@ -46,6 +46,7 @@ irt_support_sources = [
     'irt_core_resource.c',
     'irt_pnacl_translator_compile.c',
     'irt_pnacl_translator_link.c',
+#    '../cocl2/irt_cocl2_interfaces.c',
     ]
 
 # These are the objects and libraries that go into every IRT image.
@@ -65,6 +66,12 @@ irt_support_objs += [
     blob_env.ComponentObject(
         'dynamic_annotations.o',
         '${MAIN_DIR}/src/untrusted/valgrind/dynamic_annotations.c'),
+    ]
+
+irt_support_objs += [
+    blob_env.ComponentObject(
+        'irt_cocl2_interfaces.o',
+        '${MAIN_DIR}/src/untrusted/cocl2/irt_cocl2_interfaces.c'),
     ]
 
 # Build a library so that irt_support_objs can be used in tests that

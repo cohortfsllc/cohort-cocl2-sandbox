@@ -49,6 +49,7 @@ static_library("irt_core_lib") {
     "irt_sem.c",
     "irt_thread.c",
     "irt_tls.c",
+#    "../cocl2/irt_cocl2_interfaces.c",
   ]
 
   deps = [

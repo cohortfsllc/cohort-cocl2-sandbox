@@ -1,0 +1,36 @@
+# Copyright (c) 2014 The Native ClientAuthors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# executable("irt_core") {
+#   cflags_c = [ "-std=c99" ]
+# 
+#   sources = [
+#     "irt_core_resource.c",
+#     "irt_entry_core.c",
+#   ]
+#   deps = [
+#     "//native_client/build/config/nacl:nacl_base",
+#     ":irt_core_lib",
+#   ]
+# }
+
+static_library("irt_core_lib") {
+  cflags_c = [ "-std=c99" ]
+
+  sources = [
+#    "../../untrusted/pthread/nc_condvar.c",
+#    "../../untrusted/pthread/nc_mutex.c",
+#    "../../untrusted/nacl/sys_private.c",
+#    "../../untrusted/valgrind/dynamic_annotations.c",
+    "irt_cocl2_interfaces.c",
+  ]
+
+  deps = [
+    "//native_client/build/config/nacl:nacl_base",
+    "//native_client/src/shared/gio:gio",
+    "//native_client/src/shared/platform:platform",
+    "//native_client/src/shared/srpc:srpc",
+    "//native_client/src/untrusted/nacl:imc_syscalls",
+  ]
+}

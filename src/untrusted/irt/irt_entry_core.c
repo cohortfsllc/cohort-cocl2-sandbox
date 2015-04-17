@@ -7,6 +7,7 @@
 #include "native_client/src/public/irt_core.h"
 #include "native_client/src/untrusted/irt/irt.h"
 #include "native_client/src/untrusted/irt/irt_interfaces.h"
+#include "native_client/src/untrusted/cocl2/irt_cocl2_interfaces.h"
 
 /*
  * This is a list of IRT interface implementations to include in the NaCl
@@ -33,6 +34,7 @@ static size_t irt_query(const char *interface_ident,
   if (result != 0)
     return result;
 
+  // add CoCl2 interfaces to the mix
   return nacl_irt_query_cocl2(interface_ident, table, tablesize);
 }
 
