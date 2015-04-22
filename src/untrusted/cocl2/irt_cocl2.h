@@ -40,10 +40,9 @@ extern "C" {
  */
 #define NACL_IRT_COCL2_v0_1 "nacl-irt-cocl2-0.1"
 struct nacl_irt_cocl2 {
-    /*
-     * Proof of concept test.
-     */
-    int (*cocl2_test)(int a, int b, int *c);
+    int (*cocl2_test)(int a, int b, int* c);
+    int (*cocl2_getpid)(int* pid);
+    int (*cocl2_gettod)(struct timeval* tod);
 };
 
 
