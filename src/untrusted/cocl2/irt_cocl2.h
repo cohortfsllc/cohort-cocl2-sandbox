@@ -43,6 +43,7 @@ struct nacl_irt_cocl2 {
     int (*cocl2_test)(int a, int b, int* c);
     int (*cocl2_getpid)(int* pid);
     int (*cocl2_gettod)(struct timeval* tod);
+    int (*cocl2_init)(int bootstrap_socket_addr);
 };
 
 
