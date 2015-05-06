@@ -2,6 +2,7 @@
  * Copyright (c) 2015 CohortFS LLC.
  */
 
+#include <stdio.h>
 #include <string.h>
 
 #include "native_client/src/public/irt_core.h"
@@ -15,8 +16,12 @@
 // #include "native_client/src/trusted/service_runtime/include/sys/unistd.h"
 // #include "native_client/src/untrusted/cocl2/irt_cocl2.h"
 
+#define ACCEPT_ON_BOOTSTRAP_SOCKET 0
+
 
 int irt_cocl2_test(int a, int b, int* c) {
+    printf("in irt_cocl2_test with params %d and %d\n",
+           a, b);
     *c = a + b;
     return 0;
 }
@@ -35,18 +40,13 @@ int irt_cocl2_gettod(struct timeval* tod) {
     return -NACL_SYSCALL(gettimeofday)(tod);
 }
 
-int irt_cocl2_init(int bootstrap_socket_addr) {
-    int socket = NACL_SYSCALL(imc_connect)(bootstrap_socket_addr);
-    if (socket < 0) return socket;
 
+int sendString(int socket, char* str) {
     struct NaClAbiNaClImcMsgHdr msg_hdr;
-
     struct NaClAbiNaClImcMsgIoVec msg_iov;
 
-    char* message = "Hello, Chance!";
-
-    msg_iov.base = message;
-    msg_iov.length = 1 + strlen(message);
+    msg_iov.base = str;
+    msg_iov.length = 1 + strlen(str);
 
     msg_hdr.iov = &msg_iov;
     msg_hdr.iov_length = 1;
@@ -54,10 +54,59 @@ int irt_cocl2_init(int bootstrap_socket_addr) {
     msg_hdr.desc_length = 0;
     msg_hdr.flags = 0;
     
-    int send_rv = NACL_SYSCALL(imc_sendmsg)(socket, &msg_hdr, 0);
-    int close_rv = NACL_SYSCALL(close)(socket);
+    return NACL_SYSCALL(imc_sendmsg)(socket, &msg_hdr, 0);
+}
 
-    return -(send_rv || close_rv); 
+
+/*
+ * Returns 0 on success, negative value on failure.
+ *
+ * NOTE: the call to imc_connect can block under windows. See:
+ * http://code.google.com/p/nativeclient/issues/detail?id=692
+ */
+int irt_cocl2_init(int bootstrap_socket_addr) {
+    printf("in irt_cocl2_init with socket %d\n", bootstrap_socket_addr);
+    int socket = -1;
+
+#if ACCEPT_ON_BOOTSTRAP_SOCKET
+    socket = NACL_SYSCALL(imc_connect)(bootstrap_socket_addr);
+    if (socket < 0) {
+        perror("failed call to imc_connect");
+        printf("Call to imc_connect returned %d\n", socket);
+        return socket;
+    } else {
+        printf("imc_connect successfully returned %d\n", socket);
+    }
+#else
+    printf("client using bootstrap socket addr to send message to directly\n");
+    socket = bootstrap_socket_addr;
+#endif
+
+    int length_sent;
+
+    length_sent = sendString(socket, "Hello, Chance!!!");
+    printf("imc_sendmsg returned %d\n", length_sent);
+
+    length_sent = sendString(socket, "Testing some more!!!");
+    printf("imc_sendmsg returned %d\n", length_sent);
+
+#if ACCEPT_ON_BOOTSTRAP_SOCKET
+    // try to close no matter what (whether sendmsg succeeded or failed)
+    int close_rv = NACL_SYSCALL(close)(socket);
+    printf("close returned %d\n", close_rv);
+#endif
+
+    if (length_sent < 0) {
+        return length_sent;
+    }
+#if ACCEPT_ON_BOOTSTRAP_SOCKET
+    else if (close_rv < 0) {
+        return close_rv;
+    }
+#endif
+    else {
+        return 0;
+    }
 }
 
 
