@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "native_client/src/public/irt_core.h"
 #include "native_client/src/public/imc_types.h"
@@ -16,7 +17,35 @@
 // #include "native_client/src/trusted/service_runtime/include/sys/unistd.h"
 // #include "native_client/src/untrusted/cocl2/irt_cocl2.h"
 
-#define ACCEPT_ON_BOOTSTRAP_SOCKET 0
+
+bool debug_on = true;
+
+#define INFO(args...) if (debug_on) { fprintf(stderr, "INFO: " args); fputc('\n', stderr); fflush(stderr); }
+#define ERROR(args...) if (debug_on) { fprintf(stderr, "ERROR: " args); fputc('\n', stderr); fflush(stderr); }
+
+
+// since threads must have their own fixed-sized stack, and since NACL
+// reserves the right to populate the top of the stack, this is some
+// extra space we'll allocate for NACL to use.
+const int additional_stack_addrs = 16;
+
+
+#define ACCEPT_THREAD_STACK_SIZE 128 // 128 addresses
+int32_t accept_thread_stack_flag = 1;
+void* accept_thread_stack[ACCEPT_THREAD_STACK_SIZE];
+struct {
+    int socket_fd;
+    char* algorithm_name;
+    int stack_size_hint;
+    struct cocl2_interface interface;
+} accept_thread_data;
+
+
+
+int irt_cocl2_set_debug(bool value) {
+    debug_on = value;
+    return 0;
+}
 
 
 int irt_cocl2_test(int a, int b, int* c) {
@@ -41,20 +70,121 @@ int irt_cocl2_gettod(struct timeval* tod) {
 }
 
 
-int sendString(int socket, char* str) {
+int recv_buff(int socket,
+              void* buffer, int buffer_len,
+              int handles[], int* handle_count) {
     struct NaClAbiNaClImcMsgHdr msg_hdr;
     struct NaClAbiNaClImcMsgIoVec msg_iov;
 
-    msg_iov.base = str;
-    msg_iov.length = 1 + strlen(str);
+    msg_iov.base = buffer;
+    msg_iov.length = buffer_len;
 
     msg_hdr.iov = &msg_iov;
     msg_hdr.iov_length = 1;
-    msg_hdr.descv = NULL;
-    msg_hdr.desc_length = 0;
+    msg_hdr.descv = handles;
+    msg_hdr.desc_length = *handle_count;
+    msg_hdr.flags = 0;
+    
+    int recv_len = NACL_SYSCALL(imc_recvmsg)(socket, &msg_hdr, 0);
+    if (recv_len > 0) {
+        *handle_count = msg_hdr.desc_length;
+    }
+
+    INFO("imc_recvmsg received message of length %d plus %d file descriptors",
+         recv_len, msg_hdr.desc_length);
+
+    return recv_len;
+}
+
+
+int send_buff(int socket,
+              void* buffer, int buffer_len,
+              int handles[], int handle_count) {
+    struct NaClAbiNaClImcMsgHdr msg_hdr;
+    struct NaClAbiNaClImcMsgIoVec msg_iov;
+
+    msg_iov.base = buffer;
+    msg_iov.length = buffer_len;
+
+    msg_hdr.iov = &msg_iov;
+    msg_hdr.iov_length = 1;
+    msg_hdr.descv = handles;
+    msg_hdr.desc_length = handle_count;
     msg_hdr.flags = 0;
     
     return NACL_SYSCALL(imc_sendmsg)(socket, &msg_hdr, 0);
+}
+
+
+int send_str(int socket, char* str, int handles[], int handle_count) {
+    return send_buff(socket,
+                     str, 1 + strlen(str),
+                     handles, handle_count);
+}
+
+
+struct handle_request_thread_data {
+    int* stack_flag;
+};
+
+
+void handle_request_thread(void) {
+    struct handle_request_thread_data *thread_data =
+        (struct handle_request_thread_data*) NACL_SYSCALL(tls_get)();
+    if (!thread_data) {
+        ERROR("call to tls_get failed");
+        NACL_SYSCALL(thread_exit)(NULL);
+        return;
+    }
+
+    goto cleanup;
+
+cleanup:
+    INFO("handle request thread exiting");
+    NACL_SYSCALL(thread_exit)(thread_data->stack_flag);
+}
+
+
+void accept_thread(void) {
+    // int rv;
+
+    while(1) {
+        int request_fd =
+            NACL_SYSCALL(imc_accept)(accept_thread_data.socket_fd);
+        if (request_fd < 0) {
+            ERROR("failure on imc_accept: %d", request_fd);
+            continue;
+        }
+
+        char buffer[1024];
+        int fd_len = 16;
+        int fds[16];
+
+        int recv_len = recv_buff(request_fd,
+                                 buffer, 1024,
+                                 fds, &fd_len);
+        INFO("received %d bytes", recv_len);
+
+        char buffer2[1024];
+        sprintf(buffer2, "RECEIVED: %s\n", buffer);
+
+        int send_len = send_buff(request_fd,
+                                 buffer2, 1024,
+                                 NULL, 0);
+        INFO("sent %d bytes", send_len);
+        
+#if 0 // not yet
+        void* handle_request_stack =
+            malloc((additional_stack_addrs +
+                    accept_thread_data.stack_size_hint) *
+                   sizeof(void*));
+#endif
+    } // while(1)
+
+// cleanup:
+
+    INFO("accept thread exiting");
+    NACL_SYSCALL(thread_exit)(&accept_thread_stack_flag);
 }
 
 
@@ -64,49 +194,69 @@ int sendString(int socket, char* str) {
  * NOTE: the call to imc_connect can block under windows. See:
  * http://code.google.com/p/nativeclient/issues/detail?id=692
  */
-int irt_cocl2_init(int bootstrap_socket_addr) {
-    printf("in irt_cocl2_init with socket %d\n", bootstrap_socket_addr);
-    int socket = -1;
+int irt_cocl2_init(const int bootstrap_socket_addr,
+                   const char* algorithm_name,
+                   const int stack_size_hint,
+                   const struct cocl2_interface* interface) {
+    int rv;
 
-#if ACCEPT_ON_BOOTSTRAP_SOCKET
-    socket = NACL_SYSCALL(imc_connect)(bootstrap_socket_addr);
-    if (socket < 0) {
-        perror("failed call to imc_connect");
-        printf("Call to imc_connect returned %d\n", socket);
-        return socket;
-    } else {
-        printf("imc_connect successfully returned %d\n", socket);
+    INFO("in irt_cocl2_init with socket %d", bootstrap_socket_addr);
+
+    int bound_pair[2];
+
+    rv = NACL_SYSCALL(imc_makeboundsock)(bound_pair);
+    if (rv) {
+        ERROR("call to imc_makeboundsock failed: %d\n", rv);
+        return rv;
     }
-#else
-    printf("client using bootstrap socket addr to send message to directly\n");
-    socket = bootstrap_socket_addr;
-#endif
 
-    int length_sent;
+    int socket_addr = bound_pair[1];
 
-    length_sent = sendString(socket, "Hello, Chance!!!");
-    printf("imc_sendmsg returned %d\n", length_sent);
+    accept_thread_data.socket_fd = bound_pair[0];
+    const int algorithm_name_len = 1+strlen(algorithm_name);
+    accept_thread_data.algorithm_name = malloc(algorithm_name_len);
+    strncpy(accept_thread_data.algorithm_name,
+            algorithm_name,
+            algorithm_name_len);
+    accept_thread_data.interface = *interface;
+    
+    rv = NACL_SYSCALL(thread_create)(
+        accept_thread,
+        accept_thread_stack - 1 + ACCEPT_THREAD_STACK_SIZE,
+        NULL,
+        NULL);
+    if (rv) {
+        ERROR("calling thread_create: %d", rv);
+        NACL_SYSCALL(close)(bound_pair[0]);
+        return rv;
+    }
 
-    length_sent = sendString(socket, "Testing some more!!!");
-    printf("imc_sendmsg returned %d\n", length_sent);
+    char* verb = "REGISTER";
+    char *message;
+    int message_size = strlen(verb) + 1 + algorithm_name_len;
+    message = (char *) malloc(message_size);
+    if (NULL == message) {
+        ERROR("in allocating memory for REGISTER message");
+        NACL_SYSCALL(close)(bound_pair[0]);
+        return -1;
+    }
 
-#if ACCEPT_ON_BOOTSTRAP_SOCKET
-    // try to close no matter what (whether sendmsg succeeded or failed)
-    int close_rv = NACL_SYSCALL(close)(socket);
-    printf("close returned %d\n", close_rv);
-#endif
+    sprintf(message, "%s%c%s", verb, '\0', algorithm_name);
+
+    int length_sent = send_buff(bootstrap_socket_addr,
+                                message, message_size,
+                                &socket_addr, 1);
+    INFO("imc_sendmsg returned %d, expected %d",
+         length_sent,
+         message_size);
+    free(message);
 
     if (length_sent < 0) {
+        ERROR("Calling sendString");
         return length_sent;
     }
-#if ACCEPT_ON_BOOTSTRAP_SOCKET
-    else if (close_rv < 0) {
-        return close_rv;
-    }
-#endif
-    else {
-        return 0;
-    }
+
+    return 0;
 }
 
 
@@ -115,6 +265,7 @@ const struct nacl_irt_cocl2 nacl_irt_cocl2 = {
     irt_cocl2_getpid,
     irt_cocl2_gettod,
     irt_cocl2_init,
+    irt_cocl2_set_debug,
 };
 
 
