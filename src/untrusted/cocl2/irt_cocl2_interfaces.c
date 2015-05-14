@@ -146,7 +146,7 @@ cleanup:
 
 
 void accept_thread(void) {
-    // int rv;
+    int rv;
 
     while(1) {
         int request_fd =
@@ -173,6 +173,9 @@ void accept_thread(void) {
                                  NULL, 0);
         INFO("sent %d bytes", send_len);
         
+        rv = NACL_SYSCALL(close)(request_fd);
+        if (rv) ERROR("close of socket resulted in %d", rv);
+
 #if 0 // not yet
         void* handle_request_stack =
             malloc((additional_stack_addrs +
