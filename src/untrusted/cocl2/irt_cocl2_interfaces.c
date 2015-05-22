@@ -34,15 +34,26 @@ const int additional_stack_addrs = 16;
 
 
 #define ACCEPT_THREAD_STACK_SIZE 128 // 128 addresses
-// int32_t accept_thread_stack_flag = 1;
+
 typedef struct {
     int socket_fd;
     char* algorithm_name;
     int stack_size_hint;
-    struct cocl2_interface interface;
-} accept_thread_t;
+    struct cocl2_interface func_iface;
+} accept_call_data;
 
-accept_thread_t accept_thread_data;
+accept_call_data accept_thread_data;
+
+
+typedef struct {
+    int socket_fd;
+    char* algorithm_name;
+    struct cocl2_interface func_iface;
+    char* buffer;
+    int buffer_len;
+    int sent_fd; // -1 for no fd, otherwise fd
+} handle_call_data;
+
 
 int irt_cocl2_set_debug(bool value) {
     debug_on = value;
@@ -75,23 +86,18 @@ int irt_cocl2_gettod(struct timeval* tod) {
 int recv_buff(int socket,
               void* buffer, int buffer_len,
               int handles[], int* handle_count) {
-    struct NaClAbiNaClImcMsgHdr msg_hdr;
     struct NaClAbiNaClImcMsgIoVec msg_iov;
-
     msg_iov.base = buffer;
     msg_iov.length = buffer_len;
 
+    struct NaClAbiNaClImcMsgHdr msg_hdr;
     msg_hdr.iov = &msg_iov;
     msg_hdr.iov_length = 1;
     msg_hdr.descv = handles;
     msg_hdr.desc_length = *handle_count;
     msg_hdr.flags = 0;
 
-#if 0
     int recv_len = imc_recvmsg(socket, &msg_hdr, 0);
-#else
-    int recv_len = NACL_SYSCALL(imc_recvmsg)(socket, &msg_hdr, 0);
-#endif
     if (recv_len > 0) {
         *handle_count = msg_hdr.desc_length;
     }
@@ -122,11 +128,12 @@ int send_buff(int socket,
     msg_hdr.desc_length = handle_count;
     msg_hdr.flags = 0;
 
-#if 0    
-    return imc_sendmsg(socket, &msg_hdr, 0);
-#else
-    return NACL_SYSCALL(imc_sendmsg)(socket, &msg_hdr, 0);
-#endif
+    int rv = imc_sendmsg(socket, &msg_hdr, 0);
+    // non-negative is success and length of data sent
+    if (rv >= 0) {
+        rv -= COCL2_BANNER_LEN;
+    }
+    return rv;
 }
 
 
@@ -141,68 +148,74 @@ struct handle_request_thread_data {
     int* stack_flag;
 };
 
+/*
+ * Must free args_temp to prevent memory leak.
+ */
+void* handle_request_thread(void* args_temp) {
+    handle_call_data* args = (handle_call_data*) args_temp;
 
-void handle_request_thread(void) {
-    struct handle_request_thread_data *thread_data =
-        (struct handle_request_thread_data*) NACL_SYSCALL(tls_get)();
-    if (!thread_data) {
-        ERROR("call to tls_get failed");
-        NACL_SYSCALL(thread_exit)(NULL);
-        return;
-    }
+    INFO("In handle_request_thread for algorithm \"%s\"",
+         args->buffer);
+
+    char* buffer = "RECEIVED";
+    int buffer_len = 1 + strlen(buffer);
+    int sent_len = send_buff(args->socket_fd,
+                             buffer, buffer_len,
+                             NULL, 0);
+
+    INFO("handle_request_thread sent %d, expected %d",
+         sent_len, buffer_len);
 
     goto cleanup;
 
 cleanup:
     INFO("handle request thread exiting");
-    NACL_SYSCALL(thread_exit)(thread_data->stack_flag);
+    free(args_temp);
+    return NULL;
 }
 
 
-void* accept_thread(void* arg_temp) {
-    int rv;
-
-    accept_thread_t* arg = (accept_thread_t*) arg_temp;
+// TODO: allow a shutdown message to be sent through socket
+void* accept_thread(void* args_temp) {
+    accept_call_data* args = (accept_call_data*) args_temp;
 
     char buffer[1024];
     int fd_len = 16;
     int fds[16];
 
     while(1) {
-        INFO("about to accept");
-        int request_fd = imc_accept(arg->socket_fd);
-        if (request_fd < 0) {
-            ERROR("failure on imc_accept: %d", request_fd);
-            continue;
-        }
-        INFO("accept succeeded with fd of %d", request_fd);
-
-        int recv_len = recv_buff(request_fd,
+        INFO("accept_thread waiting for message on %d", args->socket_fd);
+        int recv_len = recv_buff(args->socket_fd,
                                  buffer, 1024,
                                  fds, &fd_len);
         INFO("received %d bytes", recv_len);
 
-        char buffer2[1024];
-        sprintf(buffer2, "RECEIVED: %s\n", buffer);
+        if (recv_len >= 0) {
+            handle_call_data* request_data =
+                (handle_call_data *) calloc(sizeof(handle_call_data), 1);
+            request_data->socket_fd = args->socket_fd;
+            request_data->algorithm_name = args->algorithm_name;
+            request_data->func_iface = args->func_iface;
 
-        int send_len = send_buff(request_fd,
-                                 buffer2, 1024,
-                                 NULL, 0);
-        INFO("sent %d bytes", send_len);
+            request_data->buffer_len = recv_len;
+            request_data->buffer = (char *) calloc(recv_len, 1);
+            memcpy(request_data->buffer, buffer, recv_len);
 
-#if 1        
-        rv = close(request_fd);
-#else
-        rv = NACL_SYSCALL(close)(request_fd);
-#endif
-        if (rv) ERROR("close of socket resulted in %d", rv);
+            request_data->sent_fd = fd_len > 0 ? fds[0] : -1;
 
-#if 0 // not yet
-        void* handle_request_stack =
-            malloc((additional_stack_addrs +
-                    arg->stack_size_hint) *
-                   sizeof(void*));
-#endif
+            pthread_attr_t thread_attr;
+            thread_attr.joinable = 0;
+            thread_attr.stacksize = args->stack_size_hint;
+
+            pthread_t thread_id;
+            int rv = pthread_create(&thread_id,
+                                    &thread_attr,
+                                    handle_request_thread,
+                                    &request_data);
+            if (rv) ERROR("pthread create resulted in %d", rv);
+        } else {
+            perror("trying to accept a message");
+        }
     } // while(1)
 
 // cleanup:
@@ -221,29 +234,30 @@ void* accept_thread(void* arg_temp) {
 int irt_cocl2_init(const int bootstrap_socket_addr,
                    const char* algorithm_name,
                    const int stack_size_hint,
-                   const struct cocl2_interface* interface) {
+                   const struct cocl2_interface* func_iface) {
     int rv;
 
     INFO("in irt_cocl2_init with socket %d", bootstrap_socket_addr);
 
-    int bound_pair[2];
+    int socket_pair[2];
 
-    rv = imc_makeboundsock(bound_pair);
+    rv = imc_socketpair(socket_pair);
     if (rv) {
         ERROR("call to imc_makeboundsock failed: %d\n", rv);
         perror("call to makeboundsock");
         return rv;
     }
 
-    int socket_addr = bound_pair[1];
+    const int my_socket = socket_pair[0];
+    int their_socket = socket_pair[1];
 
-    accept_thread_data.socket_fd = bound_pair[0];
+    accept_thread_data.socket_fd = my_socket;
     const int algorithm_name_len = 1+strlen(algorithm_name);
     accept_thread_data.algorithm_name = malloc(algorithm_name_len);
     strncpy(accept_thread_data.algorithm_name,
             algorithm_name,
             algorithm_name_len);
-    accept_thread_data.interface = *interface;
+    accept_thread_data.func_iface = *func_iface;
 
     pthread_t thread_id;
 
@@ -258,7 +272,8 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
                         &accept_thread_data);
     if (rv) {
         ERROR("calling pthread_create: %d", rv);
-        close(bound_pair[0]);
+        close(my_socket);
+        close(their_socket);
         return rv;
     }
 
@@ -268,7 +283,8 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
     message = (char *) malloc(message_size);
     if (NULL == message) {
         ERROR("in allocating memory for REGISTER message");
-        close(bound_pair[0]);
+        close(my_socket);
+        close(their_socket);
         return -1;
     }
 
@@ -276,11 +292,11 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
 
     int length_sent = send_buff(bootstrap_socket_addr,
                                 message, message_size,
-                                &socket_addr, 1);
+                                &their_socket, 1);
 
     INFO("imc_sendmsg returned %d, expected %d",
          length_sent,
-         message_size + COCL2_BANNER_LEN);
+         message_size);
 
     free(message);
 
