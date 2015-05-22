@@ -13,6 +13,7 @@
 #include "native_client/src/untrusted/pthread/pthread.h"
 #include "native_client/src/untrusted/cocl2/irt_cocl2_interfaces.h"
 #include "native_client/src/untrusted/cocl2/irt_cocl2.h"
+#include "native_client/src/untrusted/cocl2/cocl2_bridge.h"
 #include "native_client/src/untrusted/nacl/syscall_bindings_trampoline.h"
 // #include "native_client/src/include/nacl_compiler_annotations.h"
 // #include "native_client/src/include/nacl_macros.h"
@@ -105,14 +106,18 @@ int recv_buff(int socket,
 int send_buff(int socket,
               void* buffer, int buffer_len,
               int handles[], int handle_count) {
+
     struct NaClAbiNaClImcMsgHdr msg_hdr;
-    struct NaClAbiNaClImcMsgIoVec msg_iov;
+    struct NaClAbiNaClImcMsgIoVec msg_iov[2];
 
-    msg_iov.base = buffer;
-    msg_iov.length = buffer_len;
+    msg_iov[0].base = (void*) COCL2_BANNER;
+    msg_iov[0].length = COCL2_BANNER_LEN;
 
-    msg_hdr.iov = &msg_iov;
-    msg_hdr.iov_length = 1;
+    msg_iov[1].base = buffer;
+    msg_iov[1].length = buffer_len;
+
+    msg_hdr.iov = msg_iov;
+    msg_hdr.iov_length = 2;
     msg_hdr.descv = handles;
     msg_hdr.desc_length = handle_count;
     msg_hdr.flags = 0;
@@ -164,12 +169,13 @@ void* accept_thread(void* arg_temp) {
     int fds[16];
 
     while(1) {
+        INFO("about to accept");
         int request_fd = imc_accept(arg->socket_fd);
         if (request_fd < 0) {
             ERROR("failure on imc_accept: %d", request_fd);
             continue;
         }
-
+        INFO("accept succeeded with fd of %d", request_fd);
 
         int recv_len = recv_buff(request_fd,
                                  buffer, 1024,
@@ -274,7 +280,7 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
 
     INFO("imc_sendmsg returned %d, expected %d",
          length_sent,
-         message_size);
+         message_size + COCL2_BANNER_LEN);
 
     free(message);
 
