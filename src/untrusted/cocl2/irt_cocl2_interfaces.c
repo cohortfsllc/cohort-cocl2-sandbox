@@ -23,8 +23,14 @@
 
 bool debug_on = true;
 
-#define INFO(args...) if (debug_on) { fprintf(stderr, "INFO: " args); fputc('\n', stderr); fflush(stderr); }
-#define ERROR(args...) if (debug_on) { fprintf(stderr, "ERROR: " args); fputc('\n', stderr); fflush(stderr); }
+#define INFO(format, ...) if (debug_on) { \
+                              fprintf(stderr, \
+                                      "INFO: " format "\n", ##__VA_ARGS__ ); \
+                          }
+#define ERROR(format, ...) if (debug_on) { \
+                               fprintf(stderr, \
+                                       "ERROR: " format "\n", ##__VA_ARGS__ ); \
+                           }
 
 
 // since threads must have their own fixed-sized stack, and since NACL
@@ -42,7 +48,7 @@ typedef struct {
     struct cocl2_interface func_iface;
 } accept_call_data;
 
-accept_call_data accept_thread_data;
+// accept_call_data accept_thread_data;
 
 
 typedef struct {
@@ -184,7 +190,11 @@ void* accept_thread(void* args_temp) {
     int fds[16];
 
     while(1) {
+        // INFO("accept_thread waiting for message on %p", args);
+        // INFO("accept_thread waiting for message on %p", args);
         INFO("accept_thread waiting for message on %d", args->socket_fd);
+        INFO("accepting on ****%d****", args->socket_fd);
+        INFO("accepting on ****%d****", args->socket_fd);
         int recv_len = recv_buff(args->socket_fd,
                                  buffer, 1024,
                                  fds, &fd_len);
@@ -251,25 +261,26 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
     const int my_socket = socket_pair[0];
     int their_socket = socket_pair[1];
 
-    accept_thread_data.socket_fd = my_socket;
+    accept_call_data* accept_thread_data =
+        (accept_call_data*) calloc(sizeof(accept_call_data), 1);
+
+    accept_thread_data->socket_fd = my_socket;
     const int algorithm_name_len = 1+strlen(algorithm_name);
-    accept_thread_data.algorithm_name = malloc(algorithm_name_len);
-    strncpy(accept_thread_data.algorithm_name,
+    accept_thread_data->algorithm_name = malloc(algorithm_name_len);
+    strncpy(accept_thread_data->algorithm_name,
             algorithm_name,
             algorithm_name_len);
-    accept_thread_data.func_iface = *func_iface;
-
-    pthread_t thread_id;
+    accept_thread_data->func_iface = *func_iface;
 
     pthread_attr_t thread_attr;
     thread_attr.joinable = 1;
     thread_attr.stacksize = ACCEPT_THREAD_STACK_SIZE * sizeof(void*);
 
-
+    pthread_t thread_id;
     rv = pthread_create(&thread_id,
                         &thread_attr,
                         accept_thread,
-                        &accept_thread_data);
+                        accept_thread_data);
     if (rv) {
         ERROR("calling pthread_create: %d", rv);
         close(my_socket);
@@ -280,7 +291,7 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
     char* verb = "REGISTER";
     char* message;
     int message_size = strlen(verb) + 1 + algorithm_name_len;
-    message = (char *) malloc(message_size);
+    message = (char *) calloc(message_size, 1);
     if (NULL == message) {
         ERROR("in allocating memory for REGISTER message");
         close(my_socket);
@@ -290,20 +301,28 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
 
     sprintf(message, "%s%c%s", verb, '\0', algorithm_name);
 
+    INFO("about to call send_buff from cocl2_init");
+
     int length_sent = send_buff(bootstrap_socket_addr,
                                 message, message_size,
                                 &their_socket, 1);
 
-    INFO("imc_sendmsg returned %d, expected %d",
+    INFO("send_buff returned %d, expected %d",
          length_sent,
          message_size);
 
     free(message);
-
     if (length_sent < 0) {
         ERROR("Calling sendString");
         return length_sent;
     }
+
+    INFO("waiting for accepting thread to exit");
+
+    void* return_location;
+    rv = pthread_join(thread_id, &return_location);
+
+    free(accept_thread_data);
 
     return 0;
 }
