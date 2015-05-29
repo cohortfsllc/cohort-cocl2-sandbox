@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdbool.h>
 
+#include "native_client/src/include/nacl_assert.h"
 #include "native_client/src/public/irt_core.h"
 #include "native_client/src/public/imc_types.h"
 #include "native_client/src/public/imc_syscalls.h"
@@ -21,16 +22,22 @@
 // #include "native_client/src/untrusted/cocl2/irt_cocl2.h"
 
 
+pthread_mutex_t debug_mx;
+
 bool debug_on = true;
 
-#define INFO(format, ...) if (debug_on) { \
-                              fprintf(stderr, \
-                                      "INFO: " format "\n", ##__VA_ARGS__ ); \
-                          }
-#define ERROR(format, ...) if (debug_on) { \
-                               fprintf(stderr, \
-                                       "ERROR: " format "\n", ##__VA_ARGS__ ); \
-                           }
+#define DEBUG(format, ...) \
+    do {                                                                \
+    pthread_mutex_lock(&debug_mx);                                      \
+    if (debug_on) {                                                     \
+    fprintf(stderr, format, ##__VA_ARGS__ );                            \
+    }                                                                   \
+    pthread_mutex_unlock(&debug_mx);                                    \
+    } while(0)
+
+
+#define INFO(format, ...) DEBUG("INFO: " format "\n", ##__VA_ARGS__ )
+#define ERROR(format, ...) DEBUG("ERROR: " format "\n", ##__VA_ARGS__ )
 
 
 // since threads must have their own fixed-sized stack, and since NACL
@@ -39,7 +46,7 @@ bool debug_on = true;
 const int additional_stack_addrs = 16;
 
 
-#define ACCEPT_THREAD_STACK_SIZE 128 // 128 addresses
+#define ACCEPT_THREAD_STACK_SIZE (128 * 1024) // 128K
 
 typedef struct {
     int socket_fd;
@@ -214,8 +221,10 @@ void* accept_thread(void* args_temp) {
             request_data->sent_fd = fd_len > 0 ? fds[0] : -1;
 
             pthread_attr_t thread_attr;
-            thread_attr.joinable = 0;
-            thread_attr.stacksize = args->stack_size_hint;
+            ASSERT(!pthread_attr_init(&thread_attr));
+            ASSERT(!pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_DETACHED));
+            ASSERT(!pthread_attr_setscope(&thread_attr, PTHREAD_SCOPE_SYSTEM));
+            ASSERT(!pthread_attr_setstacksize(&thread_attr, args->stack_size_hint));
 
             pthread_t thread_id;
             int rv = pthread_create(&thread_id,
@@ -223,6 +232,8 @@ void* accept_thread(void* args_temp) {
                                     handle_request_thread,
                                     &request_data);
             if (rv) ERROR("pthread create resulted in %d", rv);
+
+            ASSERT(!pthread_attr_destroy(&thread_attr));
         } else {
             perror("trying to accept a message");
         }
@@ -246,6 +257,13 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
                    const int stack_size_hint,
                    const struct cocl2_interface* func_iface) {
     int rv;
+
+    rv = pthread_mutex_init(&debug_mx, NULL);
+    if (rv) {
+        fprintf(stderr, "ERROR: call to pthread_mutex_init failed.\n");
+        perror("call to pthread_mutex_init");
+        return rv;
+    }
 
     INFO("in irt_cocl2_init with socket %d", bootstrap_socket_addr);
 
@@ -273,8 +291,13 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
     accept_thread_data->func_iface = *func_iface;
 
     pthread_attr_t thread_attr;
-    thread_attr.joinable = 1;
-    thread_attr.stacksize = ACCEPT_THREAD_STACK_SIZE * sizeof(void*);
+    ASSERT(!pthread_attr_init(&thread_attr));
+    ASSERT(!pthread_attr_setdetachstate(&thread_attr,
+                                        PTHREAD_CREATE_JOINABLE));
+    ASSERT(!pthread_attr_setscope(&thread_attr,
+                                  PTHREAD_SCOPE_SYSTEM));
+    ASSERT(!pthread_attr_setstacksize(&thread_attr,
+                                      ACCEPT_THREAD_STACK_SIZE));
 
     pthread_t thread_id;
     rv = pthread_create(&thread_id,
@@ -287,6 +310,8 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
         close(their_socket);
         return rv;
     }
+
+    ASSERT(!pthread_attr_destroy(&thread_attr));
 
     char* verb = "REGISTER";
     char* message;
