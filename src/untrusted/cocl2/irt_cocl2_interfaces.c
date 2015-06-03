@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <errno.h>
 
 #include "native_client/src/include/nacl_assert.h"
 #include "native_client/src/public/irt_core.h"
@@ -193,57 +194,53 @@ void* accept_thread(void* args_temp) {
     accept_call_data* args = (accept_call_data*) args_temp;
 
     char buffer[1024];
-    int fd_len = 16;
-    int fds[16];
+    int fd_len = NACL_ABI_IMC_USER_DESC_MAX;
+    int fds[NACL_ABI_IMC_USER_DESC_MAX];
 
     while(1) {
-        // INFO("accept_thread waiting for message on %p", args);
-        // INFO("accept_thread waiting for message on %p", args);
-        INFO("accept_thread waiting for message on %d", args->socket_fd);
-        INFO("accepting on ****%d****", args->socket_fd);
-        INFO("accepting on ****%d****", args->socket_fd);
         int recv_len = recv_buff(args->socket_fd,
                                  buffer, 1024,
                                  fds, &fd_len);
         INFO("received %d bytes", recv_len);
 
-        if (recv_len >= 0) {
-            handle_call_data* request_data =
-                (handle_call_data *) calloc(sizeof(handle_call_data), 1);
-            request_data->socket_fd = args->socket_fd;
-            request_data->algorithm_name = args->algorithm_name;
-            request_data->func_iface = args->func_iface;
-
-            request_data->buffer_len = recv_len;
-            request_data->buffer = (char *) calloc(recv_len, 1);
-            memcpy(request_data->buffer, buffer, recv_len);
-
-            request_data->sent_fd = fd_len > 0 ? fds[0] : -1;
-
-            pthread_attr_t thread_attr;
-            ASSERT(!pthread_attr_init(&thread_attr));
-            ASSERT(!pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_DETACHED));
-            ASSERT(!pthread_attr_setscope(&thread_attr, PTHREAD_SCOPE_SYSTEM));
-            ASSERT(!pthread_attr_setstacksize(&thread_attr, args->stack_size_hint));
-
-            pthread_t thread_id;
-            int rv = pthread_create(&thread_id,
-                                    &thread_attr,
-                                    handle_request_thread,
-                                    &request_data);
-            if (rv) ERROR("pthread create resulted in %d", rv);
-
-            ASSERT(!pthread_attr_destroy(&thread_attr));
-        } else {
-            perror("trying to accept a message");
+        if (recv_len < 0) {
+            perror("recv_buff failed");
+            continue;
         }
+
+        handle_call_data* request_data =
+            (handle_call_data *) calloc(sizeof(handle_call_data), 1);
+        request_data->socket_fd = args->socket_fd;
+        request_data->algorithm_name = args->algorithm_name;
+        request_data->func_iface = args->func_iface;
+
+        request_data->buffer_len = recv_len;
+        request_data->buffer = (char *) calloc(recv_len, 1);
+        memcpy(request_data->buffer, buffer, recv_len);
+
+        request_data->sent_fd = fd_len > 0 ? fds[0] : -1;
+
+        pthread_attr_t thread_attr;
+        ASSERT(!pthread_attr_init(&thread_attr));
+        ASSERT(!pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_DETACHED));
+        ASSERT(!pthread_attr_setscope(&thread_attr, PTHREAD_SCOPE_SYSTEM));
+        ASSERT(!pthread_attr_setstacksize(&thread_attr, args->stack_size_hint));
+
+        pthread_t thread_id;
+        int rv = pthread_create(&thread_id,
+                                &thread_attr,
+                                handle_request_thread,
+                                &request_data);
+        if (rv) ERROR("pthread create resulted in %d", rv);
+
+        ASSERT(!pthread_attr_destroy(&thread_attr));
     } // while(1)
 
 // cleanup:
 
     INFO("accept thread exiting");
     return NULL;
-}
+} // accept thread
 
 
 /*
