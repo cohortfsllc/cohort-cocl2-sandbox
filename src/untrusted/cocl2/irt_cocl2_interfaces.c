@@ -130,8 +130,8 @@ int send_buff(int socket,
     struct NaClAbiNaClImcMsgHdr msg_hdr;
     struct NaClAbiNaClImcMsgIoVec msg_iov[2];
 
-    msg_iov[0].base = (void*) COCL2_BANNER;
-    msg_iov[0].length = COCL2_BANNER_LEN;
+    msg_iov[0].base = (void*) getCoCl2Header();
+    msg_iov[0].length = sizeof(CoCl2Header);
 
     msg_iov[1].base = buffer;
     msg_iov[1].length = buffer_len;
@@ -145,7 +145,7 @@ int send_buff(int socket,
     int rv = imc_sendmsg(socket, &msg_hdr, 0);
     // non-negative is success and length of data sent
     if (rv >= 0) {
-        rv -= COCL2_BANNER_LEN;
+        rv -= sizeof(CoCl2Header);
     }
     return rv;
 }
