@@ -25,17 +25,13 @@
 
 #define ACCEPT_BUFFER_LEN 1024
 
-pthread_mutex_t debug_mx;
-
 bool debug_on = true;
 
 #define DEBUG(format, ...) \
     do {                                                                \
-    pthread_mutex_lock(&debug_mx);                                      \
     if (debug_on) {                                                     \
     fprintf(stderr, format, ##__VA_ARGS__ );                            \
     }                                                                   \
-    pthread_mutex_unlock(&debug_mx);                                    \
     } while(0)
 
 
@@ -69,6 +65,14 @@ typedef struct {
     int buffer_len;
     int sent_fd; // -1 for no fd, otherwise fd
 } handle_call_data;
+
+
+void print_buffer(void* buffer, int buffer_len, int skip) {
+    char* b = (char*) buffer;
+    for (int i = skip; i < skip + buffer_len; ++i) {
+        printf("%d: %3hhu %2hhx %c\n", i, (unsigned char) b[i], b[i], b[i]);
+    }
+}
 
 
 int irt_cocl2_set_debug(bool value) {
@@ -117,9 +121,6 @@ int recv_buff(int socket,
     if (recv_len > 0) {
         *handle_count = msg_hdr.desc_length;
     }
-
-    INFO("imc_recvmsg received message of length %d plus %d file descriptors",
-         recv_len, msg_hdr.desc_length);
 
     return recv_len;
 }
@@ -194,17 +195,11 @@ struct handle_request_thread_data {
 void* handle_request_thread(void* args_temp) {
     handle_call_data* args = (handle_call_data*) args_temp;
 
-    INFO("In handle_request_thread for algorithm \"%s\"",
-         args->algorithm_name);
-
     char* buffer = "RECEIVED";
     int buffer_len = 1 + strlen(buffer);
     int sent_len = send_cocl2_buff(args->socket_fd,
                                    buffer, buffer_len,
                                    NULL, 0);
-
-    INFO("handle_request_thread sent %d, expected %d",
-         sent_len, buffer_len);
 
     goto cleanup;
 
@@ -231,8 +226,6 @@ void* accept_thread(void* args_temp) {
                                        buffer, ACCEPT_BUFFER_LEN,
                                        fds, &fd_len,
                                        &bytes_to_skip);
-        INFO("received %d bytes", recv_len);
-
         if (recv_len < 0) {
             perror("recv_buff failed");
             continue;
@@ -263,7 +256,7 @@ void* accept_thread(void* args_temp) {
         int rv = pthread_create(&thread_id,
                                 &thread_attr,
                                 handle_request_thread,
-                                &request_data);
+                                request_data);
         if (rv) ERROR("pthread create resulted in %d", rv);
 
         ASSERT(!pthread_attr_destroy(&thread_attr));
@@ -290,13 +283,6 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
                    const int stack_size_hint,
                    const struct cocl2_interface* func_iface) {
     int rv;
-
-    rv = pthread_mutex_init(&debug_mx, NULL);
-    if (rv) {
-        fprintf(stderr, "ERROR: call to pthread_mutex_init failed.\n");
-        perror("call to pthread_mutex_init");
-        return rv;
-    }
 
     INFO("in irt_cocl2_init with socket %d", bootstrap_socket_addr);
 
