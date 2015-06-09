@@ -23,6 +23,8 @@
 // #include "native_client/src/untrusted/cocl2/irt_cocl2.h"
 
 
+#define ACCEPT_BUFFER_LEN 1024
+
 pthread_mutex_t debug_mx;
 
 bool debug_on = true;
@@ -123,9 +125,33 @@ int recv_buff(int socket,
 }
 
 
-int send_buff(int socket,
-              void* buffer, int buffer_len,
-              int handles[], int handle_count) {
+int recv_cocl2_buff(int socket,
+                    void* buffer, int buffer_len,
+                    int handles[], int* handle_count,
+                    int* bytes_to_skip) {
+    *bytes_to_skip = 0;
+
+    int length = recv_buff(socket,
+                           buffer, buffer_len,
+                           handles, handle_count);
+    if (length < 0) {
+        return length;
+    }
+
+    CoCl2Header* header = (CoCl2Header*) buffer;
+    if (header->h.xfer_protocol_version != COCL2_PROTOCOL) {
+        errno = EPROTONOSUPPORT;
+        return -errno;
+    }
+
+    *bytes_to_skip = sizeof(CoCl2Header);
+    return length - *bytes_to_skip;
+}
+
+
+int send_cocl2_buff(int socket,
+                    void* buffer, int buffer_len,
+                    int handles[], int handle_count) {
 
     struct NaClAbiNaClImcMsgHdr msg_hdr;
     struct NaClAbiNaClImcMsgIoVec msg_iov[2];
@@ -152,9 +178,9 @@ int send_buff(int socket,
 
 
 int send_str(int socket, char* str, int handles[], int handle_count) {
-    return send_buff(socket,
-                     str, 1 + strlen(str),
-                     handles, handle_count);
+    return send_cocl2_buff(socket,
+                           str, 1 + strlen(str),
+                           handles, handle_count);
 }
 
 
@@ -169,13 +195,13 @@ void* handle_request_thread(void* args_temp) {
     handle_call_data* args = (handle_call_data*) args_temp;
 
     INFO("In handle_request_thread for algorithm \"%s\"",
-         args->buffer);
+         args->algorithm_name);
 
     char* buffer = "RECEIVED";
     int buffer_len = 1 + strlen(buffer);
-    int sent_len = send_buff(args->socket_fd,
-                             buffer, buffer_len,
-                             NULL, 0);
+    int sent_len = send_cocl2_buff(args->socket_fd,
+                                   buffer, buffer_len,
+                                   NULL, 0);
 
     INFO("handle_request_thread sent %d, expected %d",
          sent_len, buffer_len);
@@ -193,14 +219,18 @@ cleanup:
 void* accept_thread(void* args_temp) {
     accept_call_data* args = (accept_call_data*) args_temp;
 
-    char buffer[1024];
+    INFO("accepting for algorithm %s", args->algorithm_name);
+
+    char buffer[ACCEPT_BUFFER_LEN];
     int fd_len = NACL_ABI_IMC_USER_DESC_MAX;
     int fds[NACL_ABI_IMC_USER_DESC_MAX];
 
-    while(1) {
-        int recv_len = recv_buff(args->socket_fd,
-                                 buffer, 1024,
-                                 fds, &fd_len);
+    while (1) {
+        int bytes_to_skip;
+        int recv_len = recv_cocl2_buff(args->socket_fd,
+                                       buffer, ACCEPT_BUFFER_LEN,
+                                       fds, &fd_len,
+                                       &bytes_to_skip);
         INFO("received %d bytes", recv_len);
 
         if (recv_len < 0) {
@@ -216,15 +246,18 @@ void* accept_thread(void* args_temp) {
 
         request_data->buffer_len = recv_len;
         request_data->buffer = (char *) calloc(recv_len, 1);
-        memcpy(request_data->buffer, buffer, recv_len);
+        memcpy(request_data->buffer, buffer + bytes_to_skip, recv_len);
 
         request_data->sent_fd = fd_len > 0 ? fds[0] : -1;
 
         pthread_attr_t thread_attr;
         ASSERT(!pthread_attr_init(&thread_attr));
-        ASSERT(!pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_DETACHED));
-        ASSERT(!pthread_attr_setscope(&thread_attr, PTHREAD_SCOPE_SYSTEM));
-        ASSERT(!pthread_attr_setstacksize(&thread_attr, args->stack_size_hint));
+        ASSERT(!pthread_attr_setdetachstate(&thread_attr,
+                                            PTHREAD_CREATE_DETACHED));
+        ASSERT(!pthread_attr_setscope(&thread_attr,
+                                      PTHREAD_SCOPE_SYSTEM));
+        ASSERT(!pthread_attr_setstacksize(&thread_attr,
+                                          args->stack_size_hint));
 
         pthread_t thread_id;
         int rv = pthread_create(&thread_id,
@@ -236,9 +269,12 @@ void* accept_thread(void* args_temp) {
         ASSERT(!pthread_attr_destroy(&thread_attr));
     } // while(1)
 
-// cleanup:
+    goto cleanup; // gets rid of warning of unused label
+
+cleanup:
 
     INFO("accept thread exiting");
+    free(args_temp);
     return NULL;
 } // accept thread
 
@@ -325,9 +361,9 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
 
     INFO("about to call send_buff from cocl2_init");
 
-    int length_sent = send_buff(bootstrap_socket_addr,
-                                message, message_size,
-                                &their_socket, 1);
+    int length_sent = send_cocl2_buff(bootstrap_socket_addr,
+                                      message, message_size,
+                                      &their_socket, 1);
 
     INFO("send_buff returned %d, expected %d",
          length_sent,
