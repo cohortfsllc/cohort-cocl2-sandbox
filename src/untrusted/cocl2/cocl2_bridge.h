@@ -4,6 +4,26 @@
 #ifndef NATIVE_CLIENT_SRC_UNTRUSTED_IRT_COCL2_BRIDGE_H_
 #define NATIVE_CLIENT_SRC_UNTRUSTED_IRT_COCL2_BRIDGE_H_
 
+
+#define OP_SIZE       4
+#define OP_SHUTDOWN   "SHUT"
+#define OP_REGISTER   "REGI"
+#define OP_CALL       "CALL"
+#define OP_RETURN     "RETU"
+#define OP_SHARE_DATA "SHAR"
+
+
+struct OpCallParams {
+    uint32_t osds_requested;
+    uuid_opaque uuid;
+    char object_name; // first character of object name; null terminated string
+};
+
+
+// compare ops as 32-bit (4 byte) unsigned ints
+#define OPS_EQUAL(op1, op2) ((* (uint32_t *) (op1)) == (* (uint32_t *) (op2)))
+
+
 // duplicated from nacl_desc_base.h
 
 struct NaClInternalRealHeaderCoCl2 {

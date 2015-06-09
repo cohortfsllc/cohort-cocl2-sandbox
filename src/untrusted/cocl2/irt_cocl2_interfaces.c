@@ -39,6 +39,12 @@ bool debug_on = true;
 #define ERROR(format, ...) DEBUG("ERROR: " format "\n", ##__VA_ARGS__ )
 
 
+void ignore(void* ignored) {
+}
+
+#define IGNORE(v) while(0) { ignore(&v); }
+
+
 // since threads must have their own fixed-sized stack, and since NACL
 // reserves the right to populate the top of the stack, this is some
 // extra space we'll allocate for NACL to use.
@@ -49,7 +55,7 @@ const int additional_stack_addrs = 16;
 
 typedef struct {
     int socket_fd;
-    char* algorithm_name;
+    char* algorithm_name; // thread must free
     int stack_size_hint;
     struct cocl2_interface func_iface;
 } accept_call_data;
@@ -59,11 +65,10 @@ typedef struct {
 
 typedef struct {
     int socket_fd;
-    char* algorithm_name;
-    struct cocl2_interface func_iface;
+    char* algorithm_name; // thread may not free
+    struct cocl2_interface* func_iface;
     char* buffer;
     int buffer_len;
-    int sent_fd; // -1 for no fd, otherwise fd
 } handle_call_data;
 
 
@@ -185,14 +190,10 @@ int send_str(int socket, char* str, int handles[], int handle_count) {
 }
 
 
-struct handle_request_thread_data {
-    int* stack_flag;
-};
-
 /*
  * Must free args_temp to prevent memory leak.
  */
-void* handle_request_thread(void* args_temp) {
+void* handle_call_thread(void* args_temp) {
     handle_call_data* args = (handle_call_data*) args_temp;
 
     char* buffer = "RECEIVED";
@@ -200,13 +201,55 @@ void* handle_request_thread(void* args_temp) {
     int sent_len = send_cocl2_buff(args->socket_fd,
                                    buffer, buffer_len,
                                    NULL, 0);
+    IGNORE(sent_len);
 
     goto cleanup;
 
 cleanup:
-    INFO("handle request thread exiting");
+    INFO("handle call thread exiting");
     free(args_temp);
     return NULL;
+}
+
+
+int launch_call_thread(accept_call_data* accept_args,
+                       char* buffer,
+                       int buffer_len) {
+    handle_call_data* call_data =
+        (handle_call_data *) calloc(sizeof(handle_call_data), 1);
+    if (!call_data) {
+        return -1;
+    }
+
+    call_data->socket_fd = accept_args->socket_fd;
+    call_data->algorithm_name = accept_args->algorithm_name;
+    call_data->func_iface = &accept_args->func_iface;
+
+    call_data->buffer_len = buffer_len;
+    call_data->buffer = (char *) calloc(buffer_len, 1);
+    memcpy(call_data->buffer, buffer, buffer_len);
+
+    pthread_attr_t thread_attr;
+    ASSERT(!pthread_attr_init(&thread_attr));
+    ASSERT(!pthread_attr_setdetachstate(&thread_attr,
+                                        PTHREAD_CREATE_DETACHED));
+    ASSERT(!pthread_attr_setscope(&thread_attr,
+                                  PTHREAD_SCOPE_SYSTEM));
+    ASSERT(!pthread_attr_setstacksize(&thread_attr,
+                                      accept_args->stack_size_hint));
+
+    pthread_t thread_id;
+    int rv = pthread_create(&thread_id,
+                            &thread_attr,
+                            handle_call_thread,
+                            call_data);
+    if (rv) {
+        return rv;
+    }
+
+    rv = pthread_attr_destroy(&thread_attr);
+
+    return rv;
 }
 
 
@@ -227,44 +270,28 @@ void* accept_thread(void* args_temp) {
                                        fds, &fd_len,
                                        &bytes_to_skip);
         if (recv_len < 0) {
-            perror("recv_buff failed");
+            perror("accept_thread got bad call");
             continue;
         }
 
-        handle_call_data* request_data =
-            (handle_call_data *) calloc(sizeof(handle_call_data), 1);
-        request_data->socket_fd = args->socket_fd;
-        request_data->algorithm_name = args->algorithm_name;
-        request_data->func_iface = args->func_iface;
+        if (OPS_EQUAL(OP_CALL, buffer)) {
+            int rv = launch_call_thread(args,
+                                        buffer + OP_SIZE + 1,
+                                        recv_len - OP_SIZE - 1);
 
-        request_data->buffer_len = recv_len;
-        request_data->buffer = (char *) calloc(recv_len, 1);
-        memcpy(request_data->buffer, buffer + bytes_to_skip, recv_len);
-
-        request_data->sent_fd = fd_len > 0 ? fds[0] : -1;
-
-        pthread_attr_t thread_attr;
-        ASSERT(!pthread_attr_init(&thread_attr));
-        ASSERT(!pthread_attr_setdetachstate(&thread_attr,
-                                            PTHREAD_CREATE_DETACHED));
-        ASSERT(!pthread_attr_setscope(&thread_attr,
-                                      PTHREAD_SCOPE_SYSTEM));
-        ASSERT(!pthread_attr_setstacksize(&thread_attr,
-                                          args->stack_size_hint));
-
-        pthread_t thread_id;
-        int rv = pthread_create(&thread_id,
-                                &thread_attr,
-                                handle_request_thread,
-                                request_data);
-        if (rv) ERROR("pthread create resulted in %d", rv);
-
-        ASSERT(!pthread_attr_destroy(&thread_attr));
+            if (rv) {
+                perror("accept_thread could not launch call thread");
+                continue;
+            }
+        } else if (OPS_EQUAL(OP_SHUTDOWN, buffer)) {
+            INFO("received OP SHUTDOWN");
+            break;
+        } else if (OPS_EQUAL(OP_SHARE_DATA, buffer)) {
+            INFO("OP SHARE DATA not implemented yet");
+        } else {
+            ERROR("OP not recognized");
+        }
     } // while(1)
-
-    goto cleanup; // gets rid of warning of unused label
-
-cleanup:
 
     INFO("accept thread exiting");
     free(args_temp);
@@ -302,11 +329,11 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
         (accept_call_data*) calloc(sizeof(accept_call_data), 1);
 
     accept_thread_data->socket_fd = my_socket;
-    const int algorithm_name_len = 1+strlen(algorithm_name);
-    accept_thread_data->algorithm_name = malloc(algorithm_name_len);
+    const int algorithm_name_size = 1 + strlen(algorithm_name);
+    accept_thread_data->algorithm_name = malloc(algorithm_name_size);
     strncpy(accept_thread_data->algorithm_name,
             algorithm_name,
-            algorithm_name_len);
+            algorithm_name_size);
     accept_thread_data->func_iface = *func_iface;
 
     pthread_attr_t thread_attr;
@@ -332,10 +359,8 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
 
     ASSERT(!pthread_attr_destroy(&thread_attr));
 
-    char* verb = "REGISTER";
-    char* message;
-    int message_size = strlen(verb) + 1 + algorithm_name_len;
-    message = (char *) calloc(message_size, 1);
+    int message_size = (OP_SIZE + 1) + algorithm_name_size;
+    char* message = (char *) calloc(message_size, 1);
     if (NULL == message) {
         ERROR("in allocating memory for REGISTER message");
         close(my_socket);
@@ -343,19 +368,14 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
         return -1;
     }
 
-    sprintf(message, "%s%c%s", verb, '\0', algorithm_name);
-
-    INFO("about to call send_buff from cocl2_init");
+    sprintf(message, "%s%c%s", OP_REGISTER, '\0', algorithm_name);
 
     int length_sent = send_cocl2_buff(bootstrap_socket_addr,
                                       message, message_size,
                                       &their_socket, 1);
 
-    INFO("send_buff returned %d, expected %d",
-         length_sent,
-         message_size);
-
     free(message);
+
     if (length_sent < 0) {
         ERROR("Calling sendString");
         return length_sent;
