@@ -29,17 +29,18 @@
 #define MAX_SEND_IOVEC          8
 
 bool debug_on = true;
+char* debug_header = "I";
 
 #define DEBUG(format, ...) \
     do {                                                                \
     if (debug_on) {                                                     \
-    fprintf(stderr, format, ##__VA_ARGS__ );                            \
+        fprintf(stderr, format, debug_header, ##__VA_ARGS__ );          \
     }                                                                   \
     } while(0)
 
 
-#define INFO(format, ...) DEBUG("INFO: " format "\n", ##__VA_ARGS__ )
-#define ERROR(format, ...) DEBUG("ERROR: " format "\n", ##__VA_ARGS__ )
+#define INFO(format, ...) DEBUG("INFO %s: " format "\n", ##__VA_ARGS__ )
+#define ERROR(format, ...) DEBUG("ERROR %s: " format "\n", ##__VA_ARGS__ )
 
 
 void ignore(void* ignored) {
