@@ -3,8 +3,9 @@
  */
 
 #include <stdio.h>
-#include <string.h>
 #include <stdbool.h>
+#include <string.h>
+#include <stdarg.h>
 #include <errno.h>
 
 #include "native_client/src/include/nacl_assert.h"
@@ -23,7 +24,9 @@
 // #include "native_client/src/untrusted/cocl2/irt_cocl2.h"
 
 
-#define ACCEPT_BUFFER_LEN 1024
+#define ACCEPT_BUFFER_LEN    1024
+#define MAX_OSDS_REQUESTABLE   64
+#define MAX_SEND_IOVEC          8
 
 bool debug_on = true;
 
@@ -155,9 +158,9 @@ int recv_cocl2_buff(int socket,
 }
 
 
-int send_cocl2_buff(int socket,
-                    void* buffer, int buffer_len,
-                    int handles[], int handle_count) {
+int send_cocl2_buff_old(int socket,
+                        void* buffer, int buffer_len,
+                        int handles[], int handle_count) {
 
     struct NaClAbiNaClImcMsgHdr msg_hdr;
     struct NaClAbiNaClImcMsgIoVec msg_iov[2];
@@ -183,10 +186,58 @@ int send_cocl2_buff(int socket,
 }
 
 
+int send_cocl2_buff(int socket,
+                    int handles[], int handle_count,
+                    ...) {
+    struct NaClAbiNaClImcMsgHdr msg_hdr;
+    struct NaClAbiNaClImcMsgIoVec msg_iov[1 + MAX_SEND_IOVEC];
+
+    msg_iov[0].base = (void*) getCoCl2Header();
+    msg_iov[0].length = sizeof(CoCl2Header);
+
+    va_list access;
+    va_start(access, handle_count);
+    int count;
+    for (count = 0; ; count++) {
+        char* buffer = va_arg(access, char*);
+        if (!buffer) {
+            break;
+        }
+
+        if (count >= MAX_SEND_BUFF) {
+            // TODO handle better
+            ERROR("tried to send too many buffers");
+            --count;
+            break;
+        }
+
+        int buffer_len = va_arg(access, int);
+
+        msg_iov[1 + count].base = buffer;
+        msg_iov[1 + count].length = buffer_len;
+    }
+    va_end(access);
+
+    msg_hdr.iov = msg_iov;
+    msg_hdr.iov_length = count + 1;
+    msg_hdr.descv = handles;
+    msg_hdr.desc_length = handle_count;
+    msg_hdr.flags = 0;
+
+    int rv = imc_sendmsg(socket, &msg_hdr, 0);
+    // non-negative is success and length of data sent
+    if (rv >= 0) {
+        rv -= sizeof(CoCl2Header);
+    }
+    return rv;
+}
+
+
+
 int send_str(int socket, char* str, int handles[], int handle_count) {
     return send_cocl2_buff(socket,
-                           str, 1 + strlen(str),
-                           handles, handle_count);
+                           handles, handle_count,
+                           str, 1 + strlen(str), NULL);
 }
 
 
@@ -196,14 +247,84 @@ int send_str(int socket, char* str, int handles[], int handle_count) {
 void* handle_call_thread(void* args_temp) {
     handle_call_data* args = (handle_call_data*) args_temp;
 
-    char* buffer = "RECEIVED";
-    int buffer_len = 1 + strlen(buffer);
-    int sent_len = send_cocl2_buff(args->socket_fd,
-                                   buffer, buffer_len,
-                                   NULL, 0);
-    IGNORE(sent_len);
+    OpCallParams* params_min = (OpCallParams*) args->buffer;
+
+    if (params_min->func_id != FUNC_PLACEMENT) {
+        ERROR("unknown function %04x", params_min->func_id);
+        goto error;
+    }
+
+    if (params_min->part != -1) {
+        ERROR("multi-part messages not implemented yet");
+        goto error;
+    }
+
+    OpPlacementCallParams* params = (OpPlacementCallParams*) args->buffer;
+
+    if (params->osds_requested > MAX_OSDS_REQUESTABLE) {
+        ERROR("too many osds requested %d > %d",
+              params->osds_requested,
+              MAX_OSDS_REQUESTABLE);
+        goto error;
+    }
+
+    uint32_t osd_list[MAX_OSDS_REQUESTABLE];
+    char* object_name = args->buffer + sizeof(OpPlacementCallParams);
+
+    int rv = args->func_iface->cocl2_compute_osds(params->uuid,
+                                                  object_name,
+                                                  osd_list,
+                                                  params->osds_requested);
+
+    if (rv) {
+        ERROR("compute osds function returned an error");
+        goto error;
+    }
+
+    // SUCCESS
+    OpReturnParams ret_params;
+    ret_params.epoch = params->call_params.epoch;
+    ret_params.part = -1;
+
+    int sent_len;
+
+    // send three things back -- RETURN op code, return params, and the list
+    // of osds
+    sent_len =
+        send_cocl2_buff(args->socket_fd,
+                        NULL, 0,
+                        OP_RETURN, OP_SIZE,
+                        &ret_params, sizeof(ret_params),
+                        osd_list, params->osds_requested * sizeof(osd_list[0]),
+                        NULL);
+
+    if (sent_len < 0) {
+        ERROR("could not send return to caller %d", sent_len);
+    }
 
     goto cleanup;
+
+error:; // ; required since next line is a declaration
+
+    OpErrorParams error_params;
+    error_params.ret_params.epoch = params_min->epoch;
+    error_params.ret_params.part = -1;
+    
+    error_params.error_code = -17; // TODO have various
+    static const char* error_message = "Unspecified Error";
+    int error_message_size = 1 + strlen(error_message);
+
+    sent_len =
+        send_cocl2_buff(args->socket_fd,
+                        NULL, 0,
+                        OP_ERROR, OP_SIZE,
+                        &error_params, sizeof(error_params),
+                        error_message, error_message_size,
+                        NULL);
+
+    if (sent_len < 0) {
+        ERROR("could not send error to caller %d", sent_len);
+    }
 
 cleanup:
     INFO("handle call thread exiting");
@@ -276,8 +397,8 @@ void* accept_thread(void* args_temp) {
 
         if (OPS_EQUAL(OP_CALL, buffer)) {
             int rv = launch_call_thread(args,
-                                        buffer + OP_SIZE + 1,
-                                        recv_len - OP_SIZE - 1);
+                                        buffer + OP_SIZE,
+                                        recv_len - OP_SIZE);
 
             if (rv) {
                 perror("accept_thread could not launch call thread");
@@ -359,7 +480,7 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
 
     ASSERT(!pthread_attr_destroy(&thread_attr));
 
-    int message_size = (OP_SIZE + 1) + algorithm_name_size;
+    int message_size = OP_SIZE + algorithm_name_size;
     char* message = (char *) calloc(message_size, 1);
     if (NULL == message) {
         ERROR("in allocating memory for REGISTER message");
@@ -371,8 +492,9 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
     sprintf(message, "%s%c%s", OP_REGISTER, '\0', algorithm_name);
 
     int length_sent = send_cocl2_buff(bootstrap_socket_addr,
+                                      &their_socket, 1,
                                       message, message_size,
-                                      &their_socket, 1);
+                                      NULL);
 
     free(message);
 

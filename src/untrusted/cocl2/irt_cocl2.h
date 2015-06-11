@@ -12,7 +12,7 @@
 
 /*
  * Since the NACL build system does not have access to uuid/uuid.h, we'll
- * use an opaque internally, which matches the side of a UUID.
+ * use an opaque internally, which matches the size of a UUID.
  */
 typedef unsigned char uuid_opaque[16];
 
@@ -52,8 +52,8 @@ struct cocl2_interface {
     int (*cocl2_free_shared_mem)(int handle);
     int (*cocl2_compute_osds)(const uuid_opaque volume_uuid,
                               const char* obj_name,
-                              int* osd_list,
-                              int osd_count);
+                              uint32_t* osd_list,
+                              const int osd_count);
 };
 
 

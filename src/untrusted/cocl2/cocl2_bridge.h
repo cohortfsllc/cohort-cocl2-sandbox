@@ -5,19 +5,50 @@
 #define NATIVE_CLIENT_SRC_UNTRUSTED_IRT_COCL2_BRIDGE_H_
 
 
-#define OP_SIZE       4
+// number of bytes in OPERATIONS; we're using four so they can be
+// compared as four-byte unsigned ints
+#define OP_LEN       4
+#define OP_SIZE      (1 + OP_LEN) // null-terminating char
+
+// outside->sandbox
 #define OP_SHUTDOWN   "SHUT"
-#define OP_REGISTER   "REGI"
 #define OP_CALL       "CALL"
-#define OP_RETURN     "RETU"
 #define OP_SHARE_DATA "SHAR"
 
+// sandbox->outside
+#define OP_REGISTER   "REGI"
+#define OP_RETURN     "RETU"
+#define OP_ERROR      "ERRO"
 
-struct OpCallParams {
+#define FUNC_PLACEMENT 0x97AC
+
+
+typedef struct {
+    uint32_t epoch;   // a unique value per call
+    int32_t  part;    // e.g., 1, 2, -3 (last part is negative)
+    uint32_t func_id; // function being called
+} OpCallParams;
+
+
+typedef struct {
+    OpCallParams call_params;
     uint32_t osds_requested;
     uuid_opaque uuid;
-    char object_name; // first character of object name; null terminated string
-};
+    // char object_name; // first char of object name; null terminated string
+} OpPlacementCallParams;    
+
+
+typedef struct {
+    uint32_t epoch;   // a unique value per call
+    int32_t  part;    // e.g., 1, 2, -3 (last part is negative)
+} OpReturnParams;
+
+
+typedef struct {
+    OpReturnParams ret_params;
+    int32_t error_code;
+    // char error_msg; // first char of null-terminated message
+} OpErrorParams;
 
 
 // compare ops as 32-bit (4 byte) unsigned ints
