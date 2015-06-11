@@ -204,7 +204,7 @@ int send_cocl2_buff(int socket,
             break;
         }
 
-        if (count >= MAX_SEND_BUFF) {
+        if (count >= MAX_SEND_IOVEC) {
             // TODO handle better
             ERROR("tried to send too many buffers");
             --count;
