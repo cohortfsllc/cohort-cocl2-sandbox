@@ -1,6 +1,7 @@
 /*
- * Copyright (c) 2015 CohortFS LLC.
+ * Copyright 2015 CohortFS LLC, all rights reserved.
  */
+
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -44,6 +45,7 @@ char* debug_header = "I";
 
 
 void ignore(void* ignored) {
+    // empty
 }
 
 #define IGNORE(v) while(0) { ignore(&v); }
@@ -272,17 +274,21 @@ void* handle_call_thread(void* args_temp) {
     uint32_t osd_list[MAX_OSDS_REQUESTABLE];
     char* object_name = args->buffer + sizeof(OpPlacementCallParams);
 
+    INFO("about to call, uuid is %p, object_name is %p",
+         params->uuid,
+         object_name);
+
     int rv = args->func_iface->cocl2_compute_osds(params->uuid,
                                                   object_name,
                                                   osd_list,
                                                   params->osds_requested);
-
     if (rv) {
         ERROR("compute osds function returned an error");
         goto error;
     }
 
     // SUCCESS
+    INFO("successfully computed osds");
     OpReturnParams ret_params;
     ret_params.epoch = params->call_params.epoch;
     ret_params.part = -1;
@@ -302,6 +308,7 @@ void* handle_call_thread(void* args_temp) {
     if (sent_len < 0) {
         ERROR("could not send return to caller %d", sent_len);
     }
+    INFO("successfully sent computed osds back to outside");
 
     goto cleanup;
 
@@ -359,6 +366,8 @@ int launch_call_thread(accept_call_data* accept_args,
                                   PTHREAD_SCOPE_SYSTEM));
     ASSERT(!pthread_attr_setstacksize(&thread_attr,
                                       accept_args->stack_size_hint));
+    INFO("handle_call stack size is 0x%x",
+         accept_args->stack_size_hint);
 
     pthread_t thread_id;
     int rv = pthread_create(&thread_id,
@@ -379,7 +388,6 @@ int launch_call_thread(accept_call_data* accept_args,
 void* accept_thread(void* args_temp) {
     accept_call_data* args = (accept_call_data*) args_temp;
 
-    INFO("accepting for algorithm %s", args->algorithm_name);
 
     char buffer[ACCEPT_BUFFER_LEN];
     int fd_len = NACL_ABI_IMC_USER_DESC_MAX;
@@ -387,6 +395,7 @@ void* accept_thread(void* args_temp) {
 
     while (1) {
         int bytes_to_skip;
+        INFO("algorithm %s waiting for messages", args->algorithm_name);
         int recv_len = recv_cocl2_buff(args->socket_fd,
                                        buffer, ACCEPT_BUFFER_LEN,
                                        fds, &fd_len,
@@ -396,22 +405,24 @@ void* accept_thread(void* args_temp) {
             continue;
         }
 
-        if (OPS_EQUAL(OP_CALL, buffer)) {
-            int rv = launch_call_thread(args,
-                                        buffer + OP_SIZE,
-                                        recv_len - OP_SIZE);
+        char* buffer2 = buffer + bytes_to_skip;
 
+        if (OPS_EQUAL(OP_CALL, buffer2)) {
+            INFO("received OP CALL");
+            int rv = launch_call_thread(args,
+                                        buffer2 + OP_SIZE,
+                                        recv_len - OP_SIZE);
             if (rv) {
                 perror("accept_thread could not launch call thread");
                 continue;
             }
-        } else if (OPS_EQUAL(OP_SHUTDOWN, buffer)) {
+        } else if (OPS_EQUAL(OP_SHUTDOWN, buffer2)) {
             INFO("received OP SHUTDOWN");
             break;
-        } else if (OPS_EQUAL(OP_SHARE_DATA, buffer)) {
+        } else if (OPS_EQUAL(OP_SHARE_DATA, buffer2)) {
             INFO("OP SHARE DATA not implemented yet");
         } else {
-            ERROR("OP not recognized");
+            ERROR("OP \"%s\" not recognized", buffer2);
         }
     } // while(1)
 
@@ -451,6 +462,7 @@ int irt_cocl2_init(const int bootstrap_socket_addr,
         (accept_call_data*) calloc(sizeof(accept_call_data), 1);
 
     accept_thread_data->socket_fd = my_socket;
+    accept_thread_data->stack_size_hint = stack_size_hint;
     const int algorithm_name_size = 1 + strlen(algorithm_name);
     accept_thread_data->algorithm_name = malloc(algorithm_name_size);
     strncpy(accept_thread_data->algorithm_name,

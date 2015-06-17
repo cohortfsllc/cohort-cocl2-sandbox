@@ -1,6 +1,8 @@
 /*
- * Copyright (c) 2015 CohortFS LLC. All rights reserved.
+ * Copyright 2015 CohortFS LLC, all rights reserved.
  */
+
+
 #ifndef NATIVE_CLIENT_SRC_UNTRUSTED_IRT_IRT_COCL2_INTERFACES_H_
 #define NATIVE_CLIENT_SRC_UNTRUSTED_IRT_IRT_COCL2_INTERFACES_H_
 

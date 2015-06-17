@@ -1,8 +1,8 @@
 /*
- * Copyright (c) 2012 The Native Client Authors. All rights reserved.
- * Use of this source code is governed by a BSD-style license that can be
- * found in the LICENSE file.
+ * Copyright 2015 CohortFS LLC, all rights reserved.
  */
+
+
 #ifndef NATIVE_CLIENT_SRC_UNTRUSTED_IRT_IRT_COCL2_H_
 #define NATIVE_CLIENT_SRC_UNTRUSTED_IRT_IRT_COCL2_H_
 
@@ -24,24 +24,6 @@ typedef unsigned char uuid_opaque[16];
 #if defined(__cplusplus)
 extern "C" {
 #endif
-
-/*
- * General notes about IRT interfaces:
- *
- * All functions in IRT vectors return an int, which is zero for success
- * or a (positive) errno code for errors.  Any values are delivered via
- * result parameters.  The only exceptions exit/thread_exit, which can
- * never return, and tls_get, which can never fail.
- *
- * Some of the IRT interfaces below are disabled under PNaCl because
- * they are deprecated or not portable.  The list of IRT interfaces
- * that are allowed under PNaCl can be found in the Chromium repo in
- * ppapi/native_client/src/untrusted/pnacl_irt_shim/shim_ppapi.c.
- *
- * Interfaces with "-dev" in the query string are not
- * permanently-supported stable interfaces.  They might be removed in
- * future versions of Chromium.
- */
 
 
 #define COCL2_INTERFACE_v0_1 "cocl2-interface-0.1"
